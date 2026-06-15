@@ -1,0 +1,333 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CareBridge - Insurance Verification</title>
+
+    <!-- This single line downloads Vue 3 directly from a CDN.
+         No npm install, no build step - Vue is simply available
+         as soon as this page loads, via the global 'Vue' object
+         used further down in the <script> tag. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.4.21/vue.global.prod.min.js"></script>
+
+    <style>
+        /* Basic page styling - matches the look and feel used in
+           Day 7's healthcare UI demos. None of this CSS is
+           Vue-specific; it is standard CSS. */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f6f8;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 40px auto;
+            background-color: white;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            color: #0a4d8c;
+            font-size: 22px;
+            margin-top: 0;
+        }
+
+        label {
+            display: block;
+            margin-top: 15px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        select, button {
+            width: 100%;
+            padding: 10px;
+            margin-top: 6px;
+            font-size: 14px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+
+        button {
+            background-color: #0a4d8c;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-top: 20px;
+            font-weight: bold;
+        }
+
+            button:disabled {
+                background-color: #9aa6b2;
+                cursor: not-allowed;
+            }
+
+        .result-box {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 6px;
+            display: none;
+        }
+
+            .result-box.visible {
+                display: block;
+            }
+        /* These three classes are SWITCHED dynamically by Vue,
+           based on what the API returned - see resultClass() in
+           the script below. Green = verified/eligible, yellow =
+           verified/expired, red = unavailable. */
+        .status-verified {
+            background-color: #d1e7dd;
+            border: 1px solid #198754;
+        }
+
+        .status-expired {
+            background-color: #fff3cd;
+            border: 1px solid #ffc107;
+        }
+
+        .status-unavailable {
+            background-color: #f8d7da;
+            border: 1px solid #dc3545;
+        }
+        /* A simple spinning circle, shown while waiting for the API
+           to respond - this is the visual cue the receptionist sees
+           DURING a slow/retrying call. */
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid #ccc;
+            border-top-color: #0a4d8c;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .field {
+            margin: 4px 0;
+            font-size: 14px;
+        }
+
+            .field strong {
+                display: inline-block;
+                width: 140px;
+            }
+    </style>
+</head>
+<body>
+    <!-- 'id="app"' marks this <div> as the ROOT of our Vue
+         application - everything inside it is controlled by Vue.
+         Vue 'mounts' itself onto this element at the bottom of the
+         <script> tag (createApp({...}).mount('#app')). -->
+    <div id="app" class="container">
+        <h1>Patient Registration - Insurance Verification</h1>
+
+        <label for="patientSelect">Select Patient</label>
+        <!-- v-model="selectedPatientId" is a TWO-WAY BINDING.
+             Whatever the user selects in this dropdown is
+             AUTOMATICALLY stored in the 'selectedPatientId' data
+             value (defined in the script below) - we do not write
+             any 'onChange' event handler ourselves. -->
+        <select id="patientSelect" v-model="selectedPatientId">
+            <option value="">-- Select a patient --</option>
+            <!-- v-for="p in patients" REPEATS this <option> ONCE
+                 FOR EACH PATIENT in the 'patients' array (loaded from
+                 GET /api/registration/patients - see loadPatients()
+                 below). This is the SAME idea as @foreach in Razor,
+                 which you used on Day 7/Day 8 - just written for the
+                 browser instead of the server. -->
+            <option v-for="p in patients" :key="p.patientId" :value="p.patientId">
+                {{ p.fullName }} ({{ p.mrn }}) - {{ p.city }}
+            </option>
+        </select>
+
+        <!-- @click="verifyInsurance" runs the verifyInsurance method
+             (below) when this button is clicked.
+             :disabled="..." - the button becomes UNCLICKABLE if
+             EITHER no patient is selected, OR a request is already
+             in progress (loading === true) - this prevents the user
+             from clicking 'Verify' five times rapidly while one
+             request (possibly slow, possibly retrying) is still
+             running. -->
+        <button @click="verifyInsurance" :disabled="!selectedPatientId || loading">
+            <span v-if="loading" class="spinner"></span>
+            {{ loading ? 'Verifying...' : 'Verify Insurance' }}
+        </button>
+
+        <!-- v-if="errorMessage" - this entire <div> only appears
+             IF errorMessage is not empty. This covers cases like
+             'the network request itself completely failed' (e.g. the
+             browser could not even reach CareBridge.Api at all). -->
+        <div v-if="errorMessage" class="result-box status-unavailable visible">
+            <div class="field"><strong>Error:</strong> {{ errorMessage }}</div>
+        </div>
+
+        <!-- v-if="result" - this entire <div> only appears once we
+             have received an actual InsuranceVerificationResult from
+             CareBridge.Api. ':class="resultClass"' dynamically picks
+             one of the three colored CSS classes defined above, based
+             on the COMPUTED PROPERTY 'resultClass' (see script below).
+             The {{ result.xxx }} syntax displays values directly from
+             the API response - these field names match
+             InsuranceVerificationResult exactly (section 3.9). -->
+        <div v-if="result" class="result-box visible" :class="resultClass">
+            <div class="field"><strong>Patient:</strong> {{ result.patientName }}</div>
+            <div class="field"><strong>Payer:</strong> {{ result.payer || 'N/A' }}</div>
+            <div class="field"><strong>Policy Number:</strong> {{ result.policyNumber || 'N/A' }}</div>
+            <div class="field"><strong>Coverage Status:</strong> {{ result.coverageStatus || 'N/A' }}</div>
+            <div class="field"><strong>Outcome:</strong> {{ result.outcome }}</div>
+        </div>
+    </div>
+
+    <script>
+        // createApp is provided by the Vue CDN script loaded above.
+        const { createApp } = Vue;
+
+        createApp({
+            // ===========================================================
+            // data() RETURNS THE 'STATE' OF THIS APPLICATION - EVERY
+            // PIECE OF INFORMATION THE PAGE NEEDS TO REMEMBER.
+            // Vue automatically re-renders any part of the HTML above
+            // that DEPENDS ON these values, whenever they change.
+            // ===========================================================
+            data() {
+                return {
+                    patients: [],          // list loaded from the API
+                    selectedPatientId: '',  // bound to the dropdown
+                    loading: false,         // true WHILE waiting for verify-insurance
+                    result: null,           // the InsuranceVerificationResult, once received
+                    errorMessage: ''        // set ONLY if the request itself fails completely
+                };
+            },
+            // ===========================================================
+            // COMPUTED PROPERTIES - VALUES THAT ARE CALCULATED FROM
+            // 'data', AND AUTOMATICALLY RECALCULATED WHENEVER THE DATA
+            // THEY DEPEND ON CHANGES.
+            // ===========================================================
+            computed: {
+                // Decides WHICH of our three color classes to apply to
+                // the result box, based on the result we received.
+                resultClass() {
+                    if (!this.result) return '';
+
+                    // If verification did NOT complete (whether because
+                    // the service returned an error, OR because the
+                    // circuit breaker was open), show RED.
+                    if (!this.result.verificationCompleted)
+                        return 'status-unavailable';
+
+                    // If it DID complete, show GREEN for eligible,
+                    // YELLOW for expired.
+                    return this.result.isEligible
+                        ? 'status-verified' : 'status-expired';
+                }
+            },
+            // ===========================================================
+            // METHODS - FUNCTIONS THAT RUN IN RESPONSE TO USER ACTIONS
+            // (like clicking a button) OR LIFECYCLE EVENTS (like the
+            // page first loading - see 'mounted' below).
+            // ===========================================================
+            methods: {
+                // Called ONCE, when the page first loads (see
+                // 'mounted' below). Populates the patient dropdown.
+                async loadPatients() {
+                    try {
+                        // 'fetch' is the BROWSER'S built-in way to make
+                        // an HTTP request - the JavaScript equivalent of
+                        // HttpClient in C#. Because index.html is served
+                        // by CareBridge.Api ITSELF (section 4.2), a
+                        // RELATIVE path like '/api/registration/patients'
+                        // automatically means 'this same server,
+                        // this same port' - no need to specify the full
+                        // https://localhost:<port> address.
+                        const response = await fetch('/api/registration/patients');
+                        if (!response.ok)
+                            throw new Error('Failed to load patients');
+                        this.patients = await response.json();
+                    } catch (err) {
+                        this.errorMessage = 'Could not load patient list: ' + err.message;
+                    }
+                },
+                // Called when the 'Verify Insurance' button is clicked.
+                // THIS is the method that, behind the scenes, can
+                // trigger Polly's Retry, Timeout, and Circuit Breaker
+                // policies - though from THIS code's point of view, it
+                // is just one 'await fetch(...)' call, exactly like
+                // loadPatients() above. ALL the resilience complexity
+                // is hidden on the SERVER side (CareBridge.Api).
+                async verifyInsurance() {
+                    // Reset state for a fresh attempt: show the
+                    // spinner, clear any previous result/error.
+                    this.loading = true;
+                    this.result = null;
+                    this.errorMessage = '';
+
+                    try {
+                        const response = await fetch('/api/registration/verify-insurance', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            // JSON.stringify converts our JavaScript
+                            // object into a JSON string - the EXACT
+                            // reverse of what PostAsJsonAsync does in
+                            // C# (section 3.10). 'Number(...)' ensures
+                            // we send a NUMBER, not a text string, for
+                            // patientId - matching the 'int PatientId'
+                            // field in InsuranceVerificationRequest
+                            // (section 3.9).
+                            body: JSON.stringify({ patientId: Number(this.selectedPatientId) })
+                        });
+
+                        if (!response.ok) {
+                            // This branch fires only if CareBridge.Api
+                            // ITSELF returned a non-2xx status (e.g. our
+                            // own server crashed unexpectedly) - NOT
+                            // for 'insurance service unavailable',
+                            // which CareBridge.Api ALWAYS reports as a
+                            // normal 200 response with a descriptive
+                            // 'outcome' field (recall Stage 3 of the
+                            // controller, section 3.12).
+                            throw new Error('Server returned ' + response.status);
+                        }
+
+                        // response.json() converts the JSON response
+                        // body into a JavaScript object - 'result' now
+                        // has exactly the same shape as
+                        // InsuranceVerificationResult (section 3.9):
+                        // patientId, patientName, payer, policyNumber,
+                        // verificationCompleted, isEligible,
+                        // coverageStatus, outcome.
+                        this.result = await response.json();
+                    } catch (err) {
+                        this.errorMessage = 'Verification request failed: ' + err.message;
+                    } finally {
+                        // 'finally' runs WHETHER THE REQUEST SUCCEEDED
+                        // OR FAILED - we ALWAYS want to hide the
+                        // spinner and re-enable the button once the
+                        // request is done, one way or another.
+                        this.loading = false;
+                    }
+                }
+            },
+            // 'mounted' runs ONCE, automatically, as soon as Vue has
+            // finished setting up this page - the perfect place to do
+            // any 'load initial data' work.
+            mounted() {
+                this.loadPatients();
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
