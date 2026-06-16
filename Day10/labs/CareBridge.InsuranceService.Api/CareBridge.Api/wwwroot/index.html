@@ -1,0 +1,251 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>CareBridge - Patient Registration</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: Segoe UI, Arial, sans-serif;
+        }
+
+        body {
+            background: #f0f4f8;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 12px rgba(0,0,0,.1);
+            padding: 32px;
+            width: 100%;
+            max-width: 520px;
+        }
+
+        h2 {
+            color: #0A4D8C;
+            margin-bottom: 20px;
+        }
+
+        label {
+            font-size: 13px;
+            font-weight: bold;
+            color: #555;
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 9px 12px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-bottom: 14px;
+        }
+
+        button {
+            background: #0A4D8C;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 10px 20px;
+            font-size: 14px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 4px;
+        }
+
+            button:hover {
+                background: #083a6b;
+            }
+
+            button:disabled {
+                background: #999;
+                cursor: default;
+            }
+
+        .result {
+            margin-top: 16px;
+            padding: 12px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .ok {
+            background: #E2EFDA;
+            color: #375623;
+            border-left: 4px solid #4EA72E;
+        }
+
+        .err {
+            background: #FCE4D6;
+            color: #C00000;
+            border-left: 4px solid #C00000;
+        }
+
+        .role-badge {
+            display: inline-block;
+            background: #4EA72E;
+            color: white;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            margin-left: 8px;
+        }
+
+        .logout-btn {
+            background: none;
+            border: 1px solid #ccc;
+            color: #555;
+            width: auto;
+            padding: 6px 14px;
+            font-size: 13px;
+            margin-top: 0;
+        }
+
+        .header-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+            .header-row h2 {
+                margin-bottom: 0;
+            }
+    </style>
+</head>
+<body>
+    <div id="app">
+
+        <!-- LOGIN VIEW -->
+        <div class="card" v-if="!authToken">
+            <h2>CareBridge Login</h2>
+            <label>Email</label>
+            <input v-model="login.email" type="email" placeholder="user@carebridge.local" />
+            <label>Password</label>
+            <input v-model="login.password" type="password" placeholder="Password" />
+            <button @click="doLogin">Sign In</button>
+            <div v-if="loginError" class="result err">{{ loginError }}</div>
+        </div>
+
+        <!-- MAIN APPLICATION VIEW -->
+        <div class="card" v-if="authToken">
+            <div class="header-row">
+                <h2>CareBridge <span class="role-badge">{{ userRole }}</span></h2>
+                <button class="logout-btn" @click="doLogout">Logout</button>
+            </div>
+            <label>Select Patient</label>
+            <select v-model="selectedPatientId">
+                <option value="">-- select a patient --</option>
+                <option v-for="p in patients" :key="p.patientId" :value="p.patientId">
+                    {{ p.fullName }}
+                </option>
+            </select>
+            <button @click="verifyInsurance" :disabled="!selectedPatientId || loading">
+                {{ loading ? 'Checking...' : 'Verify Insurance' }}
+            </button>
+            <div v-if="result" :class="['result', result.success ? 'ok' : 'err']">
+                <strong>{{ result.outcome }}</strong>
+                <div v-if="result.policyNumber">Policy: {{ result.policyNumber }}</div>
+                <div v-if="result.payerName">Payer: {{ result.payerName }}</div>
+            </div>
+            <div v-if="authError" class="result err">{{ authError }}</div>
+        </div>
+
+    </div>
+    <script>
+        const { createApp } = Vue;
+        createApp({
+            data() {
+                return {
+                    authToken: null,
+                    userRole: '',
+                    login: { email: '', password: '' },
+                    loginError: '',
+                    authError: '',
+                    patients: [],
+                    selectedPatientId: '',
+                    result: null,
+                    loading: false,
+                };
+            },
+            methods: {
+                async doLogin() {
+                    this.loginError = '';
+                    try {
+                        const res = await fetch('/api/auth/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.login),
+                        });
+                        if (!res.ok) {
+                            const data = await res.json();
+                            this.loginError = data.message || 'Login failed.';
+                            return;
+                        }
+                        const data = await res.json();
+                        this.authToken = data.token;
+                        this.userRole = data.role;
+                        await this.loadPatients();
+                    } catch (e) {
+                        this.loginError = 'Cannot reach CareBridge API.';
+                    }
+                },
+                doLogout() {
+                    this.authToken = null;
+                    this.userRole = '';
+                    this.patients = [];
+                    this.result = null;
+                    this.login = { email: '', password: '' };
+                },
+                authHeaders() {
+                    return {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${this.authToken}`,
+                    };
+                },
+                async loadPatients() {
+                    this.authError = '';
+                    const res = await fetch('/api/registration/patients',
+                        { headers: this.authHeaders() });
+                    if (res.status === 401) { this.doLogout(); return; }
+                    if (res.status === 403) {
+                        this.authError = 'Your role cannot view patients.'; return;
+                    }
+                    this.patients = await res.json();
+                },
+                async verifyInsurance() {
+                    this.result = null;
+                    this.authError = '';
+                    this.loading = true;
+                    try {
+                        const res = await fetch('/api/registration/verify-insurance', {
+                            method: 'POST',
+                            headers: this.authHeaders(),
+                            body: JSON.stringify({ patientId: this.selectedPatientId }),
+                        });
+                        if (res.status === 401) { this.doLogout(); return; }
+                        if (res.status === 403) {
+                            this.authError = 'Your role cannot verify insurance.'; return;
+                        }
+                        this.result = await res.json();
+                    } catch (e) {
+                        this.result = { success: false, outcome: 'Network error.' };
+                    } finally {
+                        this.loading = false;
+                    }
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
