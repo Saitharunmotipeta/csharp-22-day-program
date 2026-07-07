@@ -7,3 +7,4 @@ obj/
 *.suo
 TestResults/
 packages/
+node-modules/
